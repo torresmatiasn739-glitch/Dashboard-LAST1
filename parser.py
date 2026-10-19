@@ -187,6 +187,60 @@ def _parse_promocion(df: pd.DataFrame, ronda: int) -> list[dict]:
     return records
 
 
+def _parse_costo_produccion_interna(df: pd.DataFrame, ronda: int) -> list[dict]:
+    """
+    Extrae el bloque 'Costo de producción interna por unidad, USD' (dentro de
+    'Informe de costos'): costo unitario de fabricación interna por región
+    (EE.UU. / Asia / Europa) y tecnología (Tec 1..4). Es otro bloque de 3
+    niveles (región > tecnología) cuyas etiquetas se repiten en los bloques
+    vecinos ('Costos de fabricación contratada por unidad', etc.), así que el
+    parser genérico no lo puede distinguir y lo resolvemos aparte.
+    Se usa en los tooltips de 'Costos de fabricación interna' del panel.
+    """
+    records = []
+    matches = df.index[df[0] == "Costo de producción interna por unidad, USD"]
+    if len(matches) == 0:
+        return records
+
+    start = matches[0]
+    companies = _find_preceding_companies(df, start)
+    if companies is None:
+        return records
+
+    current_region = None
+    n = len(df)
+    for i in range(start + 1, n):
+        row = df.iloc[i]
+        c0 = row.iloc[0]
+        if not isinstance(c0, str):
+            continue  # filas vacías dentro del bloque
+        label = c0.strip()
+
+        if label in ("EE.UU.", "Asia", "Europa"):
+            current_region = label
+            continue
+
+        if label.startswith("Tec ") and current_region:
+            for empresa, valor in zip(companies, row.iloc[1:].tolist()):
+                if pd.isna(valor):
+                    continue
+                records.append(
+                    {
+                        "ronda": ronda,
+                        "seccion": "Informe de costos",
+                        "subseccion": f"Costo de producción interna por unidad, USD — {current_region}",
+                        "metrica": label,
+                        "empresa": empresa,
+                        "valor_raw": valor,
+                    }
+                )
+            continue
+
+        break  # cualquier otra etiqueta = empezó el bloque siguiente
+
+    return records
+
+
 def parse_simulation_file(file, ronda: int) -> pd.DataFrame:
     """
     file: ruta o objeto file-like (ej. el que entrega st.file_uploader)
@@ -245,6 +299,7 @@ def parse_simulation_file(file, ronda: int) -> pd.DataFrame:
 
     records.extend(_parse_inventario(df, ronda))
     records.extend(_parse_promocion(df, ronda))
+    records.extend(_parse_costo_produccion_interna(df, ronda))
 
     out = pd.DataFrame.from_records(
         records,

@@ -18,6 +18,7 @@ Usá el menú de la izquierda para navegar entre pestañas:
 - **Ventas** → Composición de las ventas versus demanda, demanda insatisfecha y stock.
 - **Demanda** → Market share global y por region, desagregado por tecnologia.
 - **Estados Financieros** → Situacion financiera al final de ronda, con varaiacion entre años y analisis vertical.
+- **Producción** → Capacidad utilizada, cantidad de fábricas y costos internos por tecnología en EE.UU. y Asia.
 
 Se irán agregando más pestañas a medida que las vayamos armando.
 """

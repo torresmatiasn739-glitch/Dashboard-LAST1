@@ -241,6 +241,93 @@ def _parse_costo_produccion_interna(df: pd.DataFrame, ronda: int) -> list[dict]:
     return records
 
 
+
+def _parse_capacidad_empleada(df: pd.DataFrame, ronda: int) -> list[dict]:
+    """Capacidad por tecnologia y region, sin mezclarla con produccion o stock.
+
+    Se conservan las celdas vacias para distinguir un bloque cargado sin
+    actividad de una ronda antigua que todavia no incorpora estos campos.
+    Los porcentajes ya vienen en escala 0-100; no se multiplican por 100.
+    """
+    records = []
+    titulo = "Capacidad empleada, %"
+    matches = df.index[df[0] == titulo]
+    if len(matches) == 0:
+        return records
+    start = matches[0]
+    companies = _find_preceding_companies(df, start)
+    if companies is None:
+        return records
+
+    current_region = None
+    metricas = {"Tec 1", "Tec 2", "Tec 3", "Tec 4", "Capacidad Disponible"}
+    for i in range(start + 1, len(df)):
+        row = df.iloc[i]
+        c0 = row.iloc[0]
+        if not isinstance(c0, str):
+            continue
+        label = c0.strip()
+        if label in ("EE.UU.", "Asia", "Europa"):
+            current_region = label
+            continue
+        if label not in metricas:
+            break
+        if current_region is None:
+            continue
+        for empresa, valor in zip(companies, row.iloc[1:].tolist()):
+            if not isinstance(empresa, str) or not empresa.strip():
+                continue
+            records.append({
+                "ronda": ronda,
+                "seccion": "Detalles de fabricación",
+                "subseccion": f"{titulo} — {current_region}",
+                "metrica": label,
+                "empresa": empresa,
+                "valor_raw": "" if pd.isna(valor) else valor,
+            })
+    return records
+
+
+def _parse_numero_fabricas(df: pd.DataFrame, ronda: int) -> list[dict]:
+    """Separa plantas actuales de las previstas para las proximas rondas."""
+    records = []
+    matches = df.index[df[0] == "Número de fábricas"]
+    if len(matches) == 0:
+        return records
+    start = matches[0]
+    companies = _find_preceding_companies(df, start)
+    if companies is None:
+        return records
+
+    periodo = None
+    periodos = {"Ronda actual", "Próxima ronda", "Después de la próxima ronda"}
+    for i in range(start + 1, len(df)):
+        row = df.iloc[i]
+        c0 = row.iloc[0]
+        if not isinstance(c0, str):
+            continue
+        label = c0.strip()
+        if label in periodos:
+            periodo = label
+            continue
+        if label not in ("EE.UU.", "Asia", "Europa"):
+            break
+        if periodo is None:
+            continue
+        for empresa, valor in zip(companies, row.iloc[1:].tolist()):
+            if not isinstance(empresa, str) or not empresa.strip():
+                continue
+            records.append({
+                "ronda": ronda,
+                "seccion": "Detalles de fabricación",
+                "subseccion": f"Número de fábricas — {periodo}",
+                "metrica": label,
+                "empresa": empresa,
+                "valor_raw": "" if pd.isna(valor) else valor,
+            })
+    return records
+
+
 def parse_simulation_file(file, ronda: int) -> pd.DataFrame:
     """
     file: ruta o objeto file-like (ej. el que entrega st.file_uploader)
@@ -300,6 +387,8 @@ def parse_simulation_file(file, ronda: int) -> pd.DataFrame:
     records.extend(_parse_inventario(df, ronda))
     records.extend(_parse_promocion(df, ronda))
     records.extend(_parse_costo_produccion_interna(df, ronda))
+    records.extend(_parse_capacidad_empleada(df, ronda))
+    records.extend(_parse_numero_fabricas(df, ronda))
 
     out = pd.DataFrame.from_records(
         records,

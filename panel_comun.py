@@ -1,11 +1,11 @@
 """
 panel_comun.py
 --------------
-Lógica compartida por las pestañas "Panel de control" y "Tablero de control 2":
-acceso a los datos de la empresa propia, tarjetas con tooltip, gráficos
-(EBITDA desagregado, estructura patrimonial, market share), cálculo del FCF
-y encabezado de la página. Cada página solo define QUÉ tarjetas muestra y en
-qué orden; todo lo demás vive acá para no duplicarlo.
+Lógica del "Panel de control": acceso a los datos de la empresa propia, tarjetas con
+tooltip, gráficos (EBITDA desagregado, estructura patrimonial, market share), tooltips
+especiales (inventario, costo unitario de fabricación, características) y encabezado.
+La página (pages/5_Panel_de_control.py) solo define QUÉ tarjetas muestra y en qué orden;
+todo lo demás vive acá.
 """
 
 import html as html_lib
@@ -30,14 +30,6 @@ SECCION_VALUACION = "Valuación - Global"
 SUB_DCF = "Valoración flujos de fondos descontados"
 REGIONES = ["EE.UU.", "Asia", "Europa"]
 TECS = ["Tec 1", "Tec 2", "Tec 3", "Tec 4"]
-
-# Estado de flujo de efectivo por región (EE.UU. = casa matriz)
-SECCION_EFE = {
-    "EE.UU.": "Flujo de efectivo de casa matriz, miles USD",
-    "Asia": "Estado de flujo de efectivo, miles USD, Asia",
-    "Europa": "Estado de flujo de efectivo, miles USD, Europa",
-}
-SUB_EFE_OPERATIVAS = "Efectivo proveniente de actividades operativas"
 
 COLOR_INGRESO = "#1DB954"
 COLOR_COSTO = "#E3342F"
@@ -244,12 +236,29 @@ class Panel:
             f'<div class="k-val">{_h(valor_txt)}</div><div class="k-tip">{"<br>".join(lineas)}</div></div>'
         )
 
-    def tarjeta_simple(self, ronda, etiqueta, seccion, metrica, subseccion, formato, tipo, polaridad, posicion, alineacion):
+    def ranking(self, seccion, metrica, subseccion, ronda):
+        """Puesto de la empresa propia entre todas las empresas: (puesto, total). Puesto 1 = valor más alto."""
+        d = self.df
+        cond = (d["ronda"] == ronda) & (d["seccion"] == seccion) & (d["metrica"] == metrica)
+        if subseccion is not None:
+            cond &= d["subseccion"] == subseccion
+        vals = d[cond].dropna(subset=["valor_numerico"]).groupby("empresa")["valor_numerico"].first()
+        mio = vals.get(self.empresa)
+        if mio is None or pd.isna(mio):
+            return None
+        return int((vals > mio).sum()) + 1, int(len(vals))
+
+    def tarjeta_simple(
+        self, ronda, etiqueta, seccion, metrica, subseccion, formato, tipo, polaridad, posicion, alineacion, ranking=False
+    ):
         v = self.valor(seccion, metrica, ronda, subseccion)
         previo = self.valor(seccion, metrica, self.ronda_anterior(ronda), subseccion)
-        return self._tarjeta(
-            etiqueta, fmt(v, formato), self._linea_variacion(ronda, v, previo, tipo, polaridad, formato), posicion, alineacion
-        )
+        lineas = self._linea_variacion(ronda, v, previo, tipo, polaridad, formato)
+        if ranking and v is not None:
+            rk = self.ranking(seccion, metrica, subseccion, ronda)
+            if rk:
+                lineas += ["&nbsp;", f"Ranking: <b>top {rk[0]}</b> de {rk[1]} empresas"]
+        return self._tarjeta(etiqueta, fmt(v, formato), lineas, posicion, alineacion)
 
     def tarjeta_wacc(self, ronda, posicion, alineacion):
         r_prev = self.ronda_anterior(ronda)
@@ -271,145 +280,12 @@ class Panel:
         for linea in (
             _extra("Beta", "Beta", "num2", False),
             _extra("Ke (rend. esperado del patrimonio)", "Rendimiento esperado del patrimonio, %", "pct2", True),
+            _extra("Kd (costo de la deuda desp. de impuestos)", "Costo de la deuda después de impuestos, %", "pct2", True),
         ):
             if linea:
                 lineas.append(linea)
 
-        def _rating(r):
-            return self.texto(SECCION_RATIOS, "Calificación crediticia", r, SUB_INDICADORES) or self.texto(
-                SECCION_VALUACION, "Calificación crediticia", r
-            )
-
-        rating = _rating(ronda)
-        if rating:
-            rating_prev = _rating(r_prev) if r_prev is not None else None
-            if rating_prev is None:
-                nota = ""
-            elif rating_prev == rating:
-                nota = ' <span class="sub">(sin cambios)</span>'
-            else:
-                nota = f' <span class="sub">(antes: {_h(rating_prev)})</span>'
-            lineas.append(f"Calificación crediticia: <b>{_h(rating)}</b>{nota}")
         return self._tarjeta("WACC", fmt(v, "pct2"), lineas, posicion, alineacion)
-
-    def tarjeta_fcf(self, ronda, posicion, alineacion):
-        d = self.fcf(ronda)
-        if d is None:
-            return self._tarjeta("FCF (flujo de caja libre)", "—", ["Sin datos de flujo de efectivo para esta ronda"], posicion, alineacion)
-        d_prev = self.fcf(self.ronda_anterior(ronda))
-        lineas = self._linea_variacion(ronda, d["fcf"], d_prev["fcf"] if d_prev else None, "pct", 1, "miles")
-        lineas += [
-            "&nbsp;",
-            f"NOPAT = EBIT × (1 − t): <b>{_h(fmt(d['nopat'], 'miles'))}</b> <span class=\"sub\">(t = {d['tasa'] * 100:.1f}%)</span>",
-            f"(+) Depreciación: <b>{_h(fmt(d['da'], 'miles'))}</b>",
-            f"(−) Capex: <b>{_h(fmt(d['capex'], 'miles'))}</b>",
-            f"(−) Δ Capital de trabajo: <b>{_h(fmt(d['dkt'], 'miles'))}</b>",
-            '<span class="sub">Detalle por año: botón 🧮 de arriba</span>',
-        ]
-        return self._tarjeta("FCF (flujo de caja libre)", fmt(d["fcf"], "miles"), lineas, posicion, alineacion)
-
-    # --------------------------------------------------------------
-    # FCF = EBIT × (1 − t) + D&A − Capex − ΔCapital de trabajo
-    # --------------------------------------------------------------
-    def fcf(self, ronda):
-        """Devuelve un dict con todos los valores usados (miles USD) o None si faltan datos.
-        - t: tasa efectiva global = Impuesto sobre el beneficio / Beneficio antes de impuestos
-          (0% si el BAI es <= 0, porque no hay una tasa definida).
-        - Capex y ΔKT salen del estado de flujo de efectivo de las 3 regiones (EE.UU. = casa matriz).
-          Las líneas del EFE vienen con signo de caja; acá se pasan a 'aumento = +'.
-        """
-        if ronda is None:
-            return None
-        ebit = self.valor(SECCION_EERR, "Beneficio operativo (EBIT)", ronda)
-        bai = self.valor(SECCION_EERR, "Beneficio antes de impuestos", ronda)
-        imp = self.valor(SECCION_EERR, "Impuesto sobre el beneficio", ronda)
-        da = self.valor(SECCION_EERR, "Depreciación de Activos Fijos", ronda)
-        fin = self.valor(SECCION_EERR, "Gastos financieros netos", ronda)
-        if None in (ebit, bai, imp, da):
-            return None
-        # sin estado de flujo de efectivo (ej. situación inicial) no se puede calcular
-        if not any(self.existe(SECCION_EFE[r], "Efectivo 31.12.", ronda) for r in REGIONES):
-            return None
-
-        def suma_efe(metrica, subseccion=None):
-            return sum(self.valor(SECCION_EFE[r], metrica, ronda, subseccion) or 0.0 for r in REGIONES)
-
-        cf_cxc = suma_efe("Cambio en cuentas por cobrar (incr + / disminuir -)")
-        cf_stock = suma_efe("Variación en los stocks (aum - / dism +)")
-        cf_cxp = suma_efe("Cambios en cuentas por pagar (incr+ / disminuir -)")
-        cf_inv = suma_efe("Inversiones en fábricas (-) / desinversiones (+)")
-        cf_oper = suma_efe("Total", SUB_EFE_OPERATIVAS)
-
-        tasa = imp / bai if bai > 0 else 0.0
-        nopat = ebit * (1 - tasa)
-        capex = -cf_inv
-        d_cxc, d_inv, d_cxp = -cf_cxc, -cf_stock, cf_cxp
-        dkt = d_cxc + d_inv - d_cxp
-        fcf = nopat + da - capex - dkt
-
-        # Control 1: efectivo operativo (EFE) - capex + gastos financieros netos x (1 - t)  == FCF
-        control_efe = cf_oper - capex + (fin or 0.0) * (1 - tasa)
-
-        # Control 2 y 3: lo mismo, pero desde los balances Global (necesita la ronda anterior cargada)
-        r_prev = self.ronda_anterior(ronda)
-        dkt_bal = capex_bal = None
-        if r_prev is not None:
-
-            def kt(r):
-                partes = [
-                    self.valor(SECCION_BALANCE, "Inventario", r),
-                    self.valor(SECCION_BALANCE, "Cuentas por Cobrar", r),
-                    self.valor(SECCION_BALANCE, "Cuentas por pagar", r),
-                ]
-                return None if None in partes else partes[0] + partes[1] - partes[2]
-
-            kt_a, kt_p = kt(ronda), kt(r_prev)
-            if kt_a is not None and kt_p is not None:
-                dkt_bal = kt_a - kt_p
-            af_a = self.valor(SECCION_BALANCE, "Activo fijo", ronda)
-            af_p = self.valor(SECCION_BALANCE, "Activo fijo", r_prev)
-            if af_a is not None and af_p is not None:
-                capex_bal = af_a - af_p + da
-
-        dif_efe = fcf - control_efe
-        if abs(dif_efe) < 0.5:  # ruido de redondeo de punto flotante
-            dif_efe = 0.0
-
-        return dict(
-            ebit=ebit, bai=bai, imp=imp, tasa=tasa, tasa_pct=tasa * 100, nopat=nopat, da=da, capex=capex,
-            d_cxc=d_cxc, d_inv=d_inv, d_cxp=d_cxp, dkt=dkt, fcf=fcf,
-            cf_oper=cf_oper, fin=fin or 0.0, control_efe=control_efe, dif_efe=dif_efe,
-            dkt_bal=dkt_bal, capex_bal=capex_bal,
-        )
-
-    def tabla_fcf(self) -> pd.DataFrame:
-        """Tabla Concepto x Año con todos los valores usados en el FCF, más la fuente en el Excel."""
-        M, P = "miles", "pct"
-        filas = [
-            ("EBIT", "ebit", M, "Cuenta de resultados Global › Beneficio operativo (EBIT)"),
-            ("Beneficio antes de impuestos (BAI)", "bai", M, "Cuenta de resultados Global › Beneficio antes de impuestos"),
-            ("Impuesto sobre el beneficio", "imp", M, "Cuenta de resultados Global › Impuesto sobre el beneficio"),
-            ("Tasa impositiva efectiva t = Impuesto / BAI", "tasa_pct", P, "Calculado (0% si BAI ≤ 0)"),
-            ("NOPAT = EBIT × (1 − t)", "nopat", M, "Calculado"),
-            ("(+) Depreciación de activos fijos", "da", M, "Cuenta de resultados Global › Depreciación de Activos Fijos"),
-            ("(−) Capex (inversiones en fábricas, neto)", "capex", M, "EFE EE.UU. + Asia + Europa › Inversiones en fábricas (signo invertido)"),
-            ("     Δ Cuentas por cobrar (aumento +)", "d_cxc", M, "EFE 3 regiones › Cambio en cuentas por cobrar (signo invertido)"),
-            ("     Δ Inventario (aumento +)", "d_inv", M, "EFE 3 regiones › Variación en los stocks (signo invertido)"),
-            ("     Δ Cuentas por pagar (aumento +)", "d_cxp", M, "EFE 3 regiones › Cambios en cuentas por pagar"),
-            ("(−) Δ Capital de trabajo = ΔCxC + ΔInv − ΔCxP", "dkt", M, "Calculado"),
-            ("FCF = NOPAT + Deprec. − Capex − ΔKT", "fcf", M, "Calculado"),
-            ("Control 1: efectivo operativo − capex + gastos fin. × (1 − t)", "control_efe", M, "EFE 3 regiones › Total actividades operativas (debe ser = FCF)"),
-            ("     Diferencia FCF − Control 1", "dif_efe", M, "Debe ser 0"),
-            ("Control 2: Δ KT según balances (Inv + CxC − CxP)", "dkt_bal", M, "Balance Global año actual − año anterior (≈ ΔKT)"),
-            ("Control 3: Capex según balances (Δ Activo fijo + deprec.)", "capex_bal", M, "Balance Global año actual − año anterior + depreciación (≈ Capex)"),
-        ]
-        cols = {}
-        for r in self.rondas:
-            d = self.fcf(r)
-            cols[etiqueta_ronda(r)] = [fmt(d[k], f) if d and d.get(k) is not None else "—" for _, k, f, _ in filas]
-        out = pd.DataFrame(cols, index=[f[0] for f in filas])
-        out["Fuente en el Excel"] = [f[3] for f in filas]
-        return out
 
     # --------------------------------------------------------------
     # Datos para los hover especiales
@@ -614,10 +490,23 @@ class Panel:
                 showlegend=False,
             )
         )
+        # Demanda total de la ronda = suma de la demanda de todos los competidores, en todas las regiones y tecnologías.
+        demanda_total = self.df[
+            (self.df["ronda"] == ronda)
+            & (self.df["seccion"].isin([f"Informe de mercado, {r}" for r in REGIONES]))
+            & (self.df["metrica"] == "Demanda, miles unidades")
+            & (self.df["subseccion"].isin(TECS))
+        ]["valor_numerico"].sum()
+        if demanda_total > 0:
+            fig.add_annotation(
+                xref="paper", yref="paper", x=1, y=1, xanchor="right", yanchor="bottom", showarrow=False, align="right",
+                text=f'<span style="color:#5b6773;font-size:11px">DEMANDA TOTAL</span><br><b>{demanda_total:,.0f}</b> miles de u.',
+                font=dict(size=14, color=style.COLOR_TEXTO),
+            )
         fig.update_layout(
             title=dict(text="<b>Market share global</b> (unidades vendidas)", x=0.02, y=0.97, font=dict(size=14)),
             autosize=True,
-            margin=dict(t=45, b=15, l=15, r=15),
+            margin=dict(t=52, b=15, l=15, r=15),
             hoverlabel=HOVER,
             **style.FONDO_BLANCO_GRAFICO,
         )
@@ -625,32 +514,11 @@ class Panel:
 
 
 # ------------------------------------------------------------------
-# Diálogo con el cálculo del FCF año por año
-# ------------------------------------------------------------------
-@st.dialog("Cálculo del FCF año por año (miles USD)", width="large")
-def _dialogo_fcf(panel: Panel):
-    st.caption(
-        "FCF = EBIT × (1 − t) + Depreciación − Capex − Δ Capital de trabajo. "
-        "Capex y ΔKT se suman sobre las 3 regiones (EE.UU. = casa matriz). "
-        "Los controles 1, 2 y 3 sirven para validar el cálculo."
-    )
-    tabla = panel.tabla_fcf()
-    negrita = ["NOPAT = EBIT × (1 − t)", "FCF = NOPAT + Deprec. − Capex − ΔKT"]
-    st.dataframe(
-        tabla.style.apply(lambda fila: ["font-weight: 700" if fila.name in negrita else "" for _ in fila], axis=1),
-        use_container_width=True,
-        height=min(35 * (len(tabla) + 1) + 3, 620),
-    )
-
-
-# ------------------------------------------------------------------
 # Encabezado y disposición (iguales en las dos pestañas)
 # ------------------------------------------------------------------
-def encabezado(panel: Panel, titulo: str, prefijo: str, con_boton_fcf: bool = False):
-    """Logo | título | ronda | (🧮 FCF) | ⚙️. Devuelve (ronda elegida, alto CSS de los gráficos)."""
-    anchos = [1.1, 3.0, 1.5, 0.9, 0.35] if con_boton_fcf else [1.1, 3.9, 1.5, 0.35]
-    cols = st.columns(anchos, vertical_alignment="center")
-    c_logo, c_tit, c_ronda, c_cfg = cols[0], cols[1], cols[2], cols[-1]
+def encabezado(panel: Panel, titulo: str, prefijo: str):
+    """Logo | título | ronda | ⚙️. Devuelve (ronda elegida, alto CSS de los gráficos)."""
+    c_logo, c_tit, c_ronda, c_cfg = st.columns([1.1, 3.9, 1.5, 0.35], vertical_alignment="center")
 
     with c_logo:
         style.mostrar_logo(ancho=130)
@@ -666,10 +534,6 @@ def encabezado(panel: Panel, titulo: str, prefijo: str, con_boton_fcf: bool = Fa
             key=f"{prefijo}_ronda", label_visibility="collapsed",
         )
         ronda = opciones[sel]
-    if con_boton_fcf:
-        with cols[3]:
-            if st.button("🧮 FCF", key=f"{prefijo}_btn_fcf", help="Ver cómo se calcula el FCF año por año"):
-                _dialogo_fcf(panel)
     with c_cfg:
         with st.popover("⚙️"):
             auto = st.checkbox(

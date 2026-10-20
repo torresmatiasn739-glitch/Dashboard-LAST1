@@ -3,7 +3,7 @@ import streamlit as st
 import panel_comun as pc
 import sheets_io
 
-st.set_page_config(page_title="Panel de control", layout="wide")
+st.set_page_config(page_title="Tablero de control", layout="wide")
 
 df = sheets_io.load_data()
 if df.empty:
@@ -11,7 +11,7 @@ if df.empty:
     st.stop()
 
 panel = pc.Panel(df)
-ronda, alto_css = pc.encabezado(panel, "Panel de control", prefijo="pc1")
+ronda, alto_css = pc.encabezado(panel, "Tablero de control", prefijo="pc1")
 
 S = pc.SECCION_RATIOS
 tarjetas_arriba = [

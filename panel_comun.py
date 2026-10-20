@@ -1,10 +1,10 @@
 """
 panel_comun.py
 --------------
-Lógica del "Panel de control": acceso a los datos de la empresa propia, tarjetas con
+Lógica del "Tablero de control": acceso a los datos de la empresa propia, tarjetas con
 tooltip, gráficos (EBITDA desagregado, estructura patrimonial, market share), tooltips
 especiales (inventario, costo unitario de fabricación, características) y encabezado.
-La página (pages/5_Panel_de_control.py) solo define QUÉ tarjetas muestra y en qué orden;
+La página (pages/0_Tablero_de_control.py) solo define QUÉ tarjetas muestra y en qué orden;
 todo lo demás vive acá.
 """
 
@@ -290,6 +290,32 @@ class Panel:
     # --------------------------------------------------------------
     # Datos para los hover especiales
     # --------------------------------------------------------------
+    def _hover_variacion_anual(self, ronda: int, metrica: str, actual: float) -> str:
+        """Variación interanual y valor previo para los tooltips de ingresos y EBITDA."""
+        if ronda <= 0:
+            return "Variación vs. año anterior: N/D<br>Año inicial"
+
+        # No se saltean años faltantes: se compara con el año inmediatamente anterior.
+        r_prev = int(ronda) - 1
+        et_prev = etiqueta_ronda(r_prev)
+        previo = self.valor(SECCION_EERR, metrica, r_prev)
+        if previo is None:
+            return f"Variación vs. {et_prev}: N/D<br>Sin datos del año anterior"
+
+        linea_previo = f"{et_prev}: {fmt(previo, 'miles')}"
+        if previo == 0:
+            return (
+                f"Variación vs. {et_prev}: N/D (base cero)<br>"
+                + linea_previo
+            )
+
+        # Mismo criterio que las tarjetas: base absoluta para valores previos negativos.
+        variacion = (actual - previo) / abs(previo) * 100
+        return (
+            f"Variación vs. {et_prev}: <b>{variacion:+.1f}%</b><br>"
+            + linea_previo
+        )
+
     def _hover_costo_unitario(self, ronda) -> str:
         """Costo unitario de fabricación interna (USD/unidad) por tecnología y región."""
         datos = {
@@ -361,7 +387,10 @@ class Panel:
 
         # El eje va en millones de USD (los datos vienen en miles); el hover muestra el valor exacto en miles.
         etiquetas, valores = ["Ingresos"], [ingresos / 1000]
-        hover = [f"<b>Ingresos por ventas: ${ingresos:,.0f}k</b>"]
+        hover = [
+            f"<b>Ingresos por ventas: ${ingresos:,.0f}k</b><br>"
+            + self._hover_variacion_anual(ronda, "Ingresos por ventas", ingresos)
+        ]
         for nombre, corta in COSTOS_EBITDA:
             v = self.valor(SECCION_EERR, nombre, ronda) or 0
             etiquetas.append(corta)
@@ -373,7 +402,12 @@ class Panel:
                 texto += "<br>" + self._hover_caracteristicas(ronda)
             hover.append(texto)
         etiquetas.append("EBITDA")
-        hover.append(f"<b>EBITDA: {'-' if ebitda < 0 else ''}${abs(ebitda):,.0f}k</b>")
+        hover.append(
+            f"<b>EBITDA: {'-' if ebitda < 0 else ''}${abs(ebitda):,.0f}k</b><br>"
+            + self._hover_variacion_anual(
+                ronda, "Beneficio operativo antes de depreciación (EBITDA)", ebitda
+            )
+        )
 
         fig = go.Figure(
             go.Waterfall(
